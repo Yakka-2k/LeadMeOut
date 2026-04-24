@@ -1,6 +1,7 @@
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -47,6 +48,8 @@ namespace LeadMeOut
         {
             Logger = base.Logger;
             Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
+
+            new Harmony(MyPluginInfo.PLUGIN_GUID).PatchAll();
 
             // Main Entrance
             MainEntranceLineStyle = Config.Bind("Main Entrance", "LineStyle", LineStyle.Solid,

@@ -5,6 +5,8 @@
 Navigating the dark and spooky interiors of Lethal Company can be disorienting and quite lethal if you tend to get lost easily. LeadMeOut overlays real-time navigation directly into your game — either as floor-level path lines leading you to the exits, or as directional markers on your HUD compass. Two modes, fully configurable, always pointing you to safety!
 
 ---
+## Note
+- **Everyone in the Lobby will need to have this mod installed**
 
 ## Features
 
@@ -99,3 +101,6 @@ Inspired by the mod: Navigating Stars by [Nilaier](https://github.com/NilaierMus
 
 ### 1.0.0
 - Initial release.
+
+### 1.0.1
+- Added multiplayer compatibility improvements.
