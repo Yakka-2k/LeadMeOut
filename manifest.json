@@ -1,0 +1,10 @@
+{
+    "name": "LeadMeOut",
+    "version_number": "1.0.0",
+    "website_url": "https://github.com/Yakka-2k/LeadMeOut",
+    "description": "Displays customizable navigation lines on the floor or compass HUD to help you locate facility exits.",
+    "dependencies": [
+        "BepInEx-BepInExPack-5.4.2305",
+        "Rune580-LethalCompany_InputUtils-0.7.13"
+    ]
+}
