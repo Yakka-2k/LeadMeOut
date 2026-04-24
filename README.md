@@ -23,38 +23,38 @@ Navigating the dark and spooky interiors of Lethal Company can be disorienting a
 ## Screenshots
 
 ### Linear Mode — Default Lines
-![Default Lines](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-DefaultLines-Final.png)
+![Default Lines](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-DefaultLines-Final.png)
 *Shows navigational lines to all exits!*
 
 ### Fire Exit Lines
-![Fire Exit Line](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-FireExitLine-Final.png)
+![Fire Exit Line](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-FireExitLine-Final.png)
 *Yes, Fire Exit navigation too!*
 
 ### Compass Mode
-![Compass Mode](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-Compass-Final.png)
+![Compass Mode](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-Compass-Final.png)
 *Shows navigation pips down on the HUD compass.*
 
 ### Customization
-![Customization 1](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-Customization1-Final.png)
+![Customization 1](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-Customization1-Final.png)
 *Line styles are configurable.*
 
-![Customization 2](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-Customization2-Final.png)
+![Customization 2](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-Customization2-Final.png)
 *Colors are configurable.*
 
-![Customization 3](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-Customization3-Final.png)
+![Customization 3](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-Customization3-Final.png)
 *You can mix and match presets!*
 
-![Customization 4](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-Customization4-Final.png)
+![Customization 4](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-Customization4-Final.png)
 *Line widths are configurable.*
 
 ### Configuration
-![Behavior Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-BehaviorConfig-Final.png)
+![Behavior Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-BehaviorConfig-Final.png)
 *Behavior settings are configurable.*
 
-![Main Entrance Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-MainEntranceConfig-Final.png)
+![Main Entrance Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-MainEntranceConfig-Final.png)
 *Main Entrance line settings are configurable.*
 
-![Fire Exit Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/main/Images/LeadMeOut-FireExitConfig-Final.png)
+![Fire Exit Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-FireExitConfig-Final.png)
 *Fire Exit line settings are configurable.*
 
 ---
