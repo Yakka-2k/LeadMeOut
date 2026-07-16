@@ -1,4 +1,4 @@
-using BepInEx;
+﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -41,6 +41,7 @@ namespace LeadMeOut
         internal static ConfigEntry<RenderDistancePreset> RenderDistance;
         internal static ConfigEntry<bool> AutoEnableOnEntry;
         internal static ConfigEntry<int> Brightness;
+        internal static ConfigEntry<int> PathUpdateRate;
 
         private static GameObject runnerObject = null;
 
@@ -84,6 +85,11 @@ namespace LeadMeOut
                 new ConfigDescription(
                     "Brightness of exit markers (lines and compass pips). Enter a value between 20 and 100.",
                     new AcceptableValueRange<int>(20, 100)));
+
+            PathUpdateRate = Config.Bind("Behavior", "PathUpdateRate", 5,
+                new ConfigDescription(
+                    "How many times per second the navigation path recalculates. Lower values are lighter on performance (fewer updates per second) at the cost of the line reacting more slowly as you move. Default 5. Raise it toward 10 for a snappier line, or lower it if you get micro-stutters while walking.",
+                    new AcceptableValueRange<int>(1, 10)));
 
             if (BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("ainavt.lc.lethalconfig"))
             {

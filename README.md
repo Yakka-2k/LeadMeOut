@@ -23,7 +23,8 @@ Navigating the dark and spooky interiors of Lethal Company can be disorienting a
 - **Render distance control** — Limit how far ahead the path renders: Short, Medium, Long, or Full.
 - **Auto-enable on entry** — Optionally have navigation activate automatically whenever you enter a facility.
 - **Hotkey toggle** — Enable or disable navigation on the fly with a configurable hotkey (default: `L`).
-- **LethalConfig support** — Adjust all settings in-game without restarting, including a brightness slider.
+- **Performance control** — Set how often the path recalculates (Path Update Rate) to suit your hardware — lower it for smoother movement on lower-end systems.
+- **LethalConfig support** — Adjust all settings in-game without restarting, including brightness and update-rate sliders.
 
 ---
 
@@ -75,7 +76,7 @@ Navigating the dark and spooky interiors of Lethal Company can be disorienting a
 
 ![Behavior Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-BehaviorConfig-Final.png)
 
-*Behavior settings are configurable.*
+*Behavior settings are configurable, including the Path Update Rate.*
 
 ![Main Entrance Config](https://raw.githubusercontent.com/Yakka-2k/LeadMeOut/master/Images/LeadMeOut-MainEntranceConfig-Final.png)
 
@@ -126,6 +127,12 @@ Inspired by the mod: Navigating Stars by [Nilaier](https://github.com/NilaierMus
 ---
 
 ## Changelog
+
+### 2.0.1
+
+- **Fixed the Main Entrance line vanishing on some seeds.** On some specific seeds that would have a Mansion interior with the Main Entrance at the top of the stairs, it could cause the Main Entrance line to disappear entirely. Mineshaft detection is now stricter, and if a Mineshaft route ever fails, the line falls back to the real entrance instead of vanishing.
+- **New "Path Update Rate" setting.** You can now choose how many times per second the navigation path recalculates (1–10 Hz, default 5). Lower values are lighter on performance; raise it toward 10 for a snappier line.
+- **Performance.** Reduced per-update memory allocations in the pathfinder and stopped the locked-door map from occasionally rebuilding itself when nothing had changed.
 
 ### 2.0.0
 

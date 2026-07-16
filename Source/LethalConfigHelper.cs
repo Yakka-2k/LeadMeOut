@@ -1,4 +1,4 @@
-using BepInEx.Configuration;
+﻿using BepInEx.Configuration;
 using LethalConfig;
 using LethalConfig.ConfigItems;
 using LethalConfig.ConfigItems.Options;
@@ -35,6 +35,13 @@ namespace LeadMeOut
                 Name = "Brightness (%)",
                 Min = 20,
                 Max = 100,
+                RequiresRestart = false
+            }));
+            LethalConfigManager.AddConfigItem(new IntSliderConfigItem(Plugin.PathUpdateRate, new IntSliderOptions
+            {
+                Name = "Path Update Rate (Hz)",
+                Min = 1,
+                Max = 10,
                 RequiresRestart = false
             }));
 

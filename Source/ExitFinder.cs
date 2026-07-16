@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.UI;
@@ -12,7 +12,21 @@ namespace LeadMeOut
         private Transform mainEntranceTarget = null;
         private Transform mineshaftBottomTarget = null; // BottomElevatorPanel
         private Transform mineshaftTopTarget = null;    // EntranceTeleportA (top floor exit door)
+        private Transform realMainEntrance = null;      // EntranceTeleportA, always — fallback if a mineshaft path fails
         private List<Transform> fireExitTargets = new List<Transform>();
+
+        // Reusable NavMeshPath instances. NavMeshPath wraps native memory, and allocating one
+        // per pathfind (this was happening up to ~4x per GetPath, times 3 lines, times 10Hz) is a
+        // steady source of GC pressure — the kind that shows up as movement micro-freezes. These
+        // are scratch buffers: each is filled and read within a single synchronous call before
+        // the next use, so sharing them is safe. NOT thread-safe, but all pathfinding here runs
+        // on the main thread.
+        private readonly NavMeshPath scratchPath = new NavMeshPath();
+        private readonly NavMeshPath scratchPathDoor = new NavMeshPath();
+        // Separate instance for the reachability helpers (ClosestReachableDistanceTo /
+        // IsPathComplete). These run in tight loops during door-graph construction and must not
+        // clobber the scratch paths a GetPath call may be mid-way through using.
+        private readonly NavMeshPath scratchPathReach = new NavMeshPath();
 
         // Linear mode rendering
         private List<LineRenderer> mainEntranceSegments = new List<LineRenderer>();
@@ -32,7 +46,6 @@ namespace LeadMeOut
         private RectTransform mainEntrancePip = null;
         private RectTransform fireExitPip = null;
 
-        private float updateInterval = 0.1f;
         private float updateTimer = 999f;
         private float pulseTimer = 0f; // accumulates deltaTime, drives locked-door pulse
         private bool wasInsideFactory = false;
@@ -212,7 +225,13 @@ namespace LeadMeOut
             doorSimTimer += deltaTime;
 
             updateTimer += deltaTime;
-            if (updateTimer >= updateInterval)
+
+            // Read the update rate live so LethalConfig changes apply without a restart. Clamped
+            // defensively in case the config is hand-edited outside the accepted range.
+            int hz = Mathf.Clamp(Plugin.PathUpdateRate.Value, 1, 10);
+            float interval = 1f / hz;
+
+            if (updateTimer >= interval)
             {
                 updateTimer = 0f;
                 Plugin.Logger.LogDebug($"LeadMeOut: Tick mode={Plugin.NavMode.Value}");
@@ -270,33 +289,63 @@ namespace LeadMeOut
             fireExitTargets.Clear();
             mineshaftBottomTarget = null;
             mineshaftTopTarget = null;
+            realMainEntrance = null;
 
-            // Search for BottomElevatorPanel for mineshaft support
+            // Look for the Mineshaft's BottomElevatorPanel.
+            //
+            // This is the ONLY thing that decides "are we in a Mineshaft?", so it has to be
+            // strict. It used to accept any object whose name merely contained the string, and
+            // fall back to a non-clone instance if no proper one was found. That misfired on
+            // Offense — a moon that can roll EITHER Mineshaft or Mansion — where a stray match on
+            // a Mansion level flipped the mod into Mineshaft mode. The main entrance then aimed at
+            // a phantom elevator, GetPath failed, and the green line vanished entirely while the
+            // (separately-targeted) red fire exit lines kept working. That's the exact "green line
+            // missing on the Mansion interior" report.
+            //
+            // So: require a genuine spawned scene instance (parented under a "(Clone)"), and no
+            // loose fallback. No panel, no Mineshaft mode.
             Transform bottomElevatorPanel = null;
             foreach (GameObject obj in GameObject.FindObjectsOfType<GameObject>())
             {
-                if (obj.name.Contains("BottomElevatorPanel"))
+                if (!obj.name.Contains("BottomElevatorPanel")) continue;
+
+                Transform parent = obj.transform.parent;
+                if (parent != null && parent.name.Contains("(Clone)"))
                 {
-                    Transform parent = obj.transform.parent;
-                    if (parent != null && parent.name.Contains("(Clone)"))
-                    {
-                        bottomElevatorPanel = obj.transform;
-                        Plugin.Logger.LogInfo($"LeadMeOut: BottomElevatorPanel (scene instance) found at {obj.transform.position}, parent={parent.name}");
-                        break;
-                    }
-                    if (bottomElevatorPanel == null)
-                        bottomElevatorPanel = obj.transform;
+                    bottomElevatorPanel = obj.transform;
+                    Plugin.Logger.LogInfo($"LeadMeOut: BottomElevatorPanel (scene instance) found at {obj.transform.position}, parent={parent.name}");
+                    break;
                 }
             }
-
-            if (bottomElevatorPanel != null && bottomElevatorPanel.parent != null && !bottomElevatorPanel.parent.name.Contains("(Clone)"))
-                Plugin.Logger.LogWarning($"LeadMeOut: BottomElevatorPanel found but parent is not a scene clone. Using as fallback.");
 
             foreach (GameObject obj in GameObject.FindObjectsOfType<GameObject>())
             {
                 if (obj.name.Contains("EntranceTeleportA") && obj.name.Contains("Clone"))
                 {
+                    // EntranceTeleportA is the real main entrance door, always — remember it so a
+                    // failed Mineshaft path can fall back to it instead of drawing nothing.
+                    realMainEntrance = obj.transform;
+
+                    // Only treat this as a Mineshaft if the elevator panel is BOTH present AND
+                    // plausible: reachable on the NavMesh, and genuinely below the top entrance.
+                    // A phantom or mis-matched object fails one of these, and we fall through to
+                    // treating EntranceTeleportA as an ordinary main entrance — which is exactly
+                    // what every non-Mineshaft interior wants.
+                    bool elevatorIsReal = false;
                     if (bottomElevatorPanel != null)
+                    {
+                        NavMeshHit navCheck;
+                        bool onNavMesh = NavMesh.SamplePosition(bottomElevatorPanel.position, out navCheck, 4f, NavMesh.AllAreas);
+                        bool below = bottomElevatorPanel.position.y < obj.transform.position.y - 4f;
+                        elevatorIsReal = onNavMesh && below;
+
+                        if (!elevatorIsReal)
+                            Plugin.Logger.LogWarning(
+                                $"LeadMeOut: BottomElevatorPanel present but rejected (onNavMesh={onNavMesh}, below={below}). " +
+                                $"Treating as a normal (non-Mineshaft) interior.");
+                    }
+
+                    if (elevatorIsReal)
                     {
                         // Store both — we'll pick dynamically based on player Y each tick
                         mineshaftBottomTarget = bottomElevatorPanel;
@@ -400,11 +449,15 @@ namespace LeadMeOut
             var player = GetLocalPlayer();
             if (player == null) return;
 
-            // Mineshaft: switch compass target based on player Y, same as UpdatePaths
-            if (mineshaftBottomTarget != null && mineshaftTopTarget != null)
+            // Mineshaft: switch compass target based on player Y, same as UpdatePaths.
+            // Reads go through TryGetPosition for the same reason — these Transforms can be
+            // destroyed on a scene transition while this runner keeps ticking.
+            Vector3 topPosC;
+            if (mineshaftBottomTarget != null && mineshaftTopTarget != null
+                && TryGetPosition(mineshaftTopTarget, out topPosC))
             {
                 float playerY = player.transform.position.y;
-                float topY = mineshaftTopTarget.position.y;
+                float topY = topPosC.y;
                 mainEntranceTarget = (playerY >= topY - 8f) ? mineshaftTopTarget : mineshaftBottomTarget;
             }
 
@@ -417,7 +470,8 @@ namespace LeadMeOut
             Plugin.Logger.LogDebug($"LeadMeOut: UpdateCompass - forward={forward}, mainPip={mainEntrancePip != null}, firePip={fireExitPip != null}, mainTarget={mainEntranceTarget != null}, fireCount={fireExitTargets.Count}, showLines={Plugin.ShowLines.Value}");
 
             // Update main entrance pip
-            if (mainEntrancePip != null && mainEntranceTarget != null)
+            Vector3 mainPipPos;
+            if (mainEntrancePip != null && TryGetPosition(mainEntranceTarget, out mainPipPos))
             {
                 mainEntrancePip.gameObject.SetActive(showLines != ShowLinesPreset.FireExitsOnly);
                 if (showLines != ShowLinesPreset.FireExitsOnly)
@@ -426,7 +480,7 @@ namespace LeadMeOut
                     float mainWidth = Plugin.ResolvePipWidth(Plugin.MainEntranceLineWidth.Value);
                     mainEntrancePip.sizeDelta = new Vector2(mainWidth, mainEntrancePip.sizeDelta.y);
                     // Apply same lateral nudge as the line when targeting the elevator panel
-                    Vector3 mainPipTarget = mainEntranceTarget.position;
+                    Vector3 mainPipTarget = mainPipPos;
                     if (mainEntranceTarget == mineshaftBottomTarget)
                         mainPipTarget = ElevatorNudge(player.transform.position, mainPipTarget, 1.8f);
                     UpdatePipPosition(mainEntrancePip, player.transform.position, mainPipTarget, forward, mainColor);
@@ -442,11 +496,26 @@ namespace LeadMeOut
                     Color fireColor = Plugin.ApplyBrightness(Plugin.ResolveColor(Plugin.FireExitColorPreset.Value, Plugin.FireExitCustomColor.Value, Color.red));
                     float fireWidth = Plugin.ResolvePipWidth(Plugin.FireExitLineWidth.Value);
                     fireExitPip.sizeDelta = new Vector2(fireWidth, fireExitPip.sizeDelta.y);
-                    bool playerOnTopFloor = mineshaftBottomTarget != null && mineshaftTopTarget != null
-                        && player.transform.position.y >= mineshaftTopTarget.position.y - 8f;
-                    Vector3 firePipTarget = playerOnTopFloor
-                        ? ElevatorNudge(player.transform.position, mineshaftBottomTarget.position, 2.2f)
-                        : fireExitTargets[0].position;
+                    Vector3 topPosCF;
+                    bool playerOnTopFloor = mineshaftBottomTarget != null
+                        && TryGetPosition(mineshaftTopTarget, out topPosCF)
+                        && player.transform.position.y >= topPosCF.y - 8f;
+
+                    Vector3 firePipTarget;
+                    Vector3 bottomElevPosC, fireExit0Pos;
+                    if (playerOnTopFloor && TryGetPosition(mineshaftBottomTarget, out bottomElevPosC))
+                    {
+                        firePipTarget = ElevatorNudge(player.transform.position, bottomElevPosC, 2.2f);
+                    }
+                    else if (TryGetPosition(fireExitTargets[0], out fireExit0Pos))
+                    {
+                        firePipTarget = fireExit0Pos;
+                    }
+                    else
+                    {
+                        // Target gone — skip this frame's fire pip update
+                        firePipTarget = player.transform.position;
+                    }
                     UpdatePipPosition(fireExitPip, player.transform.position, firePipTarget, forward, fireColor);
                 }
             }
@@ -545,21 +614,57 @@ namespace LeadMeOut
             updateTimer = 999f;
         }
 
+        // Safely read a Transform's position. Returns false if the transform is null OR has been
+        // destroyed by Unity (its managed wrapper can outlive the native object, in which case a
+        // plain field access still throws on .position). Every per-tick read of a cached exit
+        // Transform goes through here, because those objects are destroyed on scene transitions
+        // while this runner keeps ticking with stale references for a frame.
+        private static bool TryGetPosition(Transform t, out Vector3 pos)
+        {
+            pos = Vector3.zero;
+            if (t == null) return false;      // Unity's overloaded == also catches destroyed objects
+            try
+            {
+                pos = t.position;
+                return true;
+            }
+            catch (MissingReferenceException) { return false; }
+            catch (System.NullReferenceException) { return false; }
+        }
+
         private void UpdatePaths()
         {
             if (!smoothedPosInitialized) return;
 
-            // Mineshaft: switch target based on player Y relative to the top exit door
-            if (mineshaftBottomTarget != null && mineshaftTopTarget != null)
+            // Mineshaft: switch target based on player Y relative to the top exit door.
+            //
+            // Reads go through TryGetPosition because these Transforms can be DESTROYED on a scene
+            // transition while this runner — which survives scene loads (DontDestroyOnLoad) — keeps
+            // ticking with stale references for a frame or two before FindExits re-runs. A
+            // destroyed Transform's managed wrapper can survive and throw on .position. This was
+            // throwing a NullReferenceException every tick on Mineshaft levels (220 in one run).
+            Vector3 topPos;
+            if (mineshaftBottomTarget != null && mineshaftTopTarget != null
+                && TryGetPosition(mineshaftTopTarget, out topPos))
             {
                 float playerY = smoothedPlayerPos.y;
-                float topY = mineshaftTopTarget.position.y;
+                float topY = topPos.y;
                 // If player is within 8 units below the top exit, route to the door; otherwise route to elevator
                 mainEntranceTarget = (playerY >= topY - 8f) ? mineshaftTopTarget : mineshaftBottomTarget;
             }
 
-            // Nudge only the TARGET POINT for mineshaft elevator, not the whole path
-            Vector3 mainTargetPos = mainEntranceTarget != null ? mainEntranceTarget.position : Vector3.zero;
+            // If the chosen target is gone, don't touch it — hide the main line and wait for
+            // FindExits to re-establish valid targets on the next level. Fire exits draw below
+            // from their own list and are unaffected.
+            Vector3 mainTargetPos;
+            if (!TryGetPosition(mainEntranceTarget, out mainTargetPos))
+            {
+                if (mainEntranceRoot != null) mainEntranceRoot.SetActive(false);
+                mainEntranceTarget = null;
+            }
+
+            // Nudge only the TARGET POINT for mineshaft elevator, not the whole path.
+            // mainTargetPos was already fetched safely above (Vector3.zero if the target is gone).
             bool mainTargetIsElevator = mineshaftBottomTarget != null && mainEntranceTarget == mineshaftBottomTarget;
             if (mainTargetIsElevator)
                 mainTargetPos = ElevatorNudge(smoothedPlayerPos, mainTargetPos, 1.8f);
@@ -579,8 +684,25 @@ namespace LeadMeOut
             if (mainEntranceRoot != null && mainEntranceTarget != null && showLines != ShowLinesPreset.FireExitsOnly)
             {
                 mainEntranceRoot.SetActive(true);
-                // Cache key = the un-nudged exit position, so the door sim cache stays stable
-                PathResult? result = GetPath(smoothedPlayerPos, mainTargetPos, mainEntranceTarget.position);
+                // Cache key = the un-nudged exit position, so the door sim cache stays stable.
+                // Fetch it safely; if the target vanished this tick, fall back to mainTargetPos.
+                Vector3 mainCacheKey;
+                if (!TryGetPosition(mainEntranceTarget, out mainCacheKey)) mainCacheKey = mainTargetPos;
+                PathResult? result = GetPath(smoothedPlayerPos, mainTargetPos, mainCacheKey);
+
+                // Safety net: if we're in Mineshaft mode and the elevator path produced nothing,
+                // fall back to the real entrance door so the green line still draws. A wrong-but-
+                // present line beats a missing one, and this also covers any future case where
+                // mineshaft detection misfires.
+                if (!result.HasValue && mineshaftBottomTarget != null && realMainEntrance != null
+                    && mainEntranceTarget != realMainEntrance)
+                {
+                    Plugin.Logger.LogWarning("LeadMeOut: mineshaft main path failed — falling back to the real entrance door.");
+                    mainTargetPos = realMainEntrance.position;
+                    mainTargetIsElevator = false;
+                    result = GetPath(smoothedPlayerPos, mainTargetPos, realMainEntrance.position);
+                }
+
                 if (result.HasValue)
                 {
                     // Does this line end at the elevator? Then the endpoint is an ESCAPE, not a
@@ -617,8 +739,16 @@ namespace LeadMeOut
 
             if (showLines != ShowLinesPreset.MainEntranceOnly)
             {
-                bool playerOnTopFloor = mineshaftBottomTarget != null && mineshaftTopTarget != null
-                    && smoothedPlayerPos.y >= mineshaftTopTarget.position.y - 8f;
+                Vector3 topPosF;
+                bool playerOnTopFloor = mineshaftBottomTarget != null
+                    && TryGetPosition(mineshaftTopTarget, out topPosF)
+                    && smoothedPlayerPos.y >= topPosF.y - 8f;
+
+                // If we're routing fire exits to the elevator, we need its position safely.
+                // If it can't be read, drop out of top-floor mode rather than throw.
+                Vector3 bottomElevPos = Vector3.zero;
+                if (playerOnTopFloor && !TryGetPosition(mineshaftBottomTarget, out bottomElevPos))
+                    playerOnTopFloor = false;
 
                 // Track marker endpoints so duplicates at the same locked door are suppressed
                 var shownMarkerPositions = new List<Vector3>();
@@ -626,6 +756,16 @@ namespace LeadMeOut
                 for (int i = 0; i < fireExitTargets.Count; i++)
                 {
                     if (i >= fireExitRoots.Count) break;
+
+                    // Skip a fire-exit target that's been destroyed out from under us (scene
+                    // transition). Its position read would throw; wait for FindExits to refresh.
+                    Vector3 fireExitPos;
+                    bool haveFireExitPos = TryGetPosition(fireExitTargets[i], out fireExitPos);
+                    if (!haveFireExitPos && !playerOnTopFloor)
+                    {
+                        if (fireExitRoots[i] != null) fireExitRoots[i].SetActive(false);
+                        continue;
+                    }
 
                     // Ensure a marker slot exists for this exit
                     while (fireExitMarkers.Count <= i) fireExitMarkers.Add(null);
@@ -636,13 +776,13 @@ namespace LeadMeOut
 
                     // On mineshaft top floor, route to elevator instead of unreachable lower exit
                     Vector3 fireTarget = playerOnTopFloor
-                        ? ElevatorNudge(smoothedPlayerPos, mineshaftBottomTarget.position, 2.2f)
-                        : fireExitTargets[i].position;
+                        ? ElevatorNudge(smoothedPlayerPos, bottomElevPos, 2.2f)
+                        : fireExitPos;
 
                     // Cache key = the un-nudged exit position, so the door sim cache stays stable
                     Vector3 fireSimKey = playerOnTopFloor
-                        ? mineshaftBottomTarget.position
-                        : fireExitTargets[i].position;
+                        ? bottomElevPos
+                        : fireExitPos;
 
                     PathResult? result = GetPath(smoothedPlayerPos, fireTarget, fireSimKey);
                     if (result.HasValue)
@@ -798,7 +938,7 @@ namespace LeadMeOut
 
             for (int hop = 0; hop < maxHops; hop++)
             {
-                NavMeshPath path = new NavMeshPath();
+                NavMeshPath path = scratchPath;
                 NavMesh.CalculatePath(currentFrom, toHit.position, NavMesh.AllAreas, path);
 
                 if (path.status == NavMeshPathStatus.PathComplete && path.corners.Length >= 2)
@@ -812,15 +952,65 @@ namespace LeadMeOut
 
                 if (path.corners.Length < 2)
                 {
-                    // No path at all from current position
+                    // Unity found NO route at all — the door sits on a NavMesh island genuinely
+                    // disconnected from the player's island (confirmed visually: a real gap
+                    // between the mesh and the door frame, not just a small seam).
+                    //
+                    // The earlier fix here tried to hop toward wherever the player currently stood
+                    // each tick, which never actually closed the gap — it just kept drawing a
+                    // fresh 2-4 unit stub near the player that appeared to "follow" them and never
+                    // built toward the door. That's fixed by doing ONE validated search instead of
+                    // a per-tick guess: sample points near the RAW door position at increasing
+                    // radius, and for each candidate confirm a real path exists from the player
+                    // before accepting it. This finds the closest point on the PLAYER'S OWN island
+                    // to the door — a fixed, correct destination — rather than probing blindly.
+                    if (hop == 0)
+                    {
+                        Vector3 nearestReachable;
+                        if (FindNearestReachablePoint(fromHit.position, to, out nearestReachable))
+                        {
+                            NavMeshPath toNear = scratchPathDoor;
+                            NavMesh.CalculatePath(fromHit.position, nearestReachable, NavMesh.AllAreas, toNear);
+                            if (toNear.status == NavMeshPathStatus.PathComplete && toNear.corners.Length >= 2)
+                            {
+                                foreach (var c in toNear.corners)
+                                    allCorners.Add(c);
+                                bridged = true;
+                                isDeadEnd = true; // stops short of the actual door — flag as such
+                                Plugin.Logger.LogDebug($"LeadMeOut: reached nearest point on player's island: {nearestReachable} (door unreachable — separate NavMesh island).");
+                                break;
+                            }
+                        }
+                    }
+
                     isLockedDoor = true;
                     break;
                 }
 
-                // Partial path — check whether it makes progress toward the exit
+                // A partial path whose endpoint already sits essentially AT the exit is good
+                // enough — accept it as-is. This is the staircase-entrance case: the door anchor
+                // sits a hair past the NavMesh edge, so the path comes back "partial" even though
+                // it climbs the stairs correctly and stops inches from the door. Follow that
+                // routed line and finish, rather than treating it as a dead end.
+                Vector3 partialEnd = path.corners[path.corners.Length - 1];
+                float gapToExit = Vector3.Distance(partialEnd, toHit.position);
+                if (gapToExit <= 1.5f)
+                {
+                    foreach (var c in path.corners)
+                        allCorners.Add(c);
+                    bridged = true;
+                    break;
+                }
+
+                // Partial path — check whether it makes progress toward the exit.
+                // Measured against the SNAPPED target (toHit.position) — the same point the path
+                // above was calculated toward. Using the raw target here caused off-mesh exits
+                // (a main entrance atop a staircase) to look like they were heading "backward" on
+                // the very first hop, so GetPath bailed and the line never drew at all.
+                Vector3 exitRef = toHit.position;
                 Vector3 breakPoint = path.corners[path.corners.Length - 1];
-                float playerDist = Vector3.Distance(currentFrom, to);
-                float breakDist = Vector3.Distance(breakPoint, to);
+                float playerDist = Vector3.Distance(currentFrom, exitRef);
+                float breakDist = Vector3.Distance(breakPoint, exitRef);
 
                 // Only reject if the path heads SIGNIFICANTLY away from the exit.
                 // A small backward drift (e.g. rounding a corner) is fine — we keep the
@@ -829,9 +1019,10 @@ namespace LeadMeOut
                 // the exit than we started this hop.
                 if (breakDist > playerDist + 3f)
                 {
-                    // Clearly wrong direction — hide rather than mislead
+                    // Clearly wrong direction — stop following, but keep whatever forward
+                    // progress we already have. On hop 0 we have none yet, so this leaves the
+                    // corner list short; the end-of-method logic then decides how to finish.
                     isLockedDoor = true;
-                    if (hop == 0) return null; // never made forward progress at all
                     break;
                 }
 
@@ -866,7 +1057,7 @@ namespace LeadMeOut
                         continue;
 
                     // Only consider candidates that are closer to the exit than the break point
-                    float candidateDist = Vector3.Distance(sampleHit.position, to);
+                    float candidateDist = Vector3.Distance(sampleHit.position, exitRef);
                     if (candidateDist >= bestCandidateDist) continue;
 
                     // NEVER hop THROUGH a locked door.
@@ -927,12 +1118,20 @@ namespace LeadMeOut
             // arbitrary dead-end point.
             if (isDeadEnd)
             {
-                Plugin.Logger.LogDebug($"LeadMeOut: PATH DEAD-END — attempting door simulation for target {to}");
+                // Use the SNAPPED exit position (toHit.position), not the raw target. For an exit
+                // that sits off the NavMesh — a main entrance at the top of a staircase, where the
+                // mesh is patchy — the raw point can be several units from any walkable region, so
+                // the door sim's region check reports "exit is in no region" and gives up, and the
+                // green line never draws. The snapped point is the same place the pathfinder itself
+                // aimed at, so the two halves finally agree.
+                Vector3 exitForSim = toHit.position;
+
+                Plugin.Logger.LogDebug($"LeadMeOut: PATH DEAD-END — attempting door simulation for target {exitForSim}");
                 Vector3 blockingDoor;
-                if (FindBlockingDoorCached(from, to, doorSimKey ?? to, out blockingDoor))
+                if (FindBlockingDoorCached(from, exitForSim, doorSimKey ?? exitForSim, out blockingDoor))
                 {
                     // Path to the blocking door — this should be reachable
-                    NavMeshPath toDoor = new NavMeshPath();
+                    NavMeshPath toDoor = scratchPathDoor;
                     NavMeshHit doorHit;
                     if (NavMesh.SamplePosition(blockingDoor, out doorHit, 3f, NavMesh.AllAreas) &&
                         NavMesh.CalculatePath(fromHit.position, doorHit.position, NavMesh.AllAreas, toDoor) &&
@@ -1085,12 +1284,25 @@ namespace LeadMeOut
         // opened, or a new level loaded — the region graph is stale and gets rebuilt.
         private int ComputeLockSignature()
         {
-            int sig = 17;
+            // Order-independent on purpose. The previous version folded instance IDs in sequence
+            // (sig = sig*31 + id), so the result depended on the order GetDoorCache happened to
+            // return doors in — and that order isn't guaranteed stable when the cache rebuilds
+            // every few seconds. An order change with no actual lock change would shift the
+            // signature, throw away a perfectly good region graph, and trigger a full rebuild:
+            // a periodic hitch for no reason. XOR-accumulating a per-door hash removes the order
+            // dependence, so the signature changes only when a door genuinely locks or unlocks.
+            int sig = 0;
             foreach (var entry in GetDoorCache())
             {
                 if (entry.door == null) continue;
                 if (!entry.door.isLocked) continue;
-                sig = sig * 31 + entry.door.GetInstanceID();
+
+                // Mix the id so nearby ids don't produce nearby hashes, then XOR (commutative)
+                int h = entry.door.GetInstanceID();
+                h ^= (h >> 16);
+                h *= unchecked((int)0x45d9f3b);
+                h ^= (h >> 16);
+                sig ^= h;
             }
             return sig;
         }
@@ -1353,7 +1565,7 @@ namespace LeadMeOut
             if (!NavMesh.SamplePosition(from, out fh, 3f, NavMesh.AllAreas)) return float.MaxValue;
             if (!NavMesh.SamplePosition(to, out th, 5f, NavMesh.AllAreas)) return float.MaxValue;
 
-            NavMeshPath p = new NavMeshPath();
+            NavMeshPath p = scratchPathReach;
             NavMesh.CalculatePath(fh.position, th.position, NavMesh.AllAreas, p);
 
             if (p.status == NavMeshPathStatus.PathComplete) return 0f;
@@ -1365,7 +1577,7 @@ namespace LeadMeOut
 
         private bool IsPathComplete(Vector3 a, Vector3 b)
         {
-            NavMeshPath p = new NavMeshPath();
+            NavMeshPath p = scratchPathReach;
             if (!NavMesh.CalculatePath(a, b, NavMesh.AllAreas, p)) return false;
             return p.status == NavMeshPathStatus.PathComplete;
         }
@@ -1602,6 +1814,10 @@ namespace LeadMeOut
             // Not routing to the elevator at all — this line can never earn the icon
             if (!targetIsElevator) return false;
 
+            // Resolve the shaft position safely — it may have been destroyed mid-transition
+            Vector3 shaft;
+            if (!TryGetPosition(mineshaftBottomTarget, out shaft)) return false;
+
             // Blocked by a REAL locked door on the way there? Then the line stops AT THE DOOR,
             // and that's where the padlock belongs. Elevators themselves are never locked.
             //
@@ -1614,7 +1830,6 @@ namespace LeadMeOut
             if (pts == null || pts.Count == 0) return false;
 
             Vector3 end = pts[pts.Count - 1];
-            Vector3 shaft = mineshaftBottomTarget.position;
 
             float dx = end.x - shaft.x;
             float dz = end.z - shaft.z;
@@ -2562,6 +2777,23 @@ namespace LeadMeOut
             // ---- 1. Find where the path passes through a doorway ----
             var crossings = new List<DoorwayCrossing>();
 
+            // Cheap reject bounds: the path's XZ axis-aligned box, expanded by the hint radius.
+            // Most doors in a level are nowhere near any given path, and without this every one of
+            // them pays for a full per-segment scan on every update. One pass to build the box,
+            // then a couple of float compares per door throws out the ones that can't matter.
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+            for (int i = 0; i < corners.Count; i++)
+            {
+                Vector3 c = corners[i];
+                if (c.x < minX) minX = c.x;
+                if (c.x > maxX) maxX = c.x;
+                if (c.z < minZ) minZ = c.z;
+                if (c.z > maxZ) maxZ = c.z;
+            }
+            minX -= DOORWAY_HINT_RADIUS; maxX += DOORWAY_HINT_RADIUS;
+            minZ -= DOORWAY_HINT_RADIUS; maxZ += DOORWAY_HINT_RADIUS;
+
             foreach (var entry in GetDoorCache())
             {
                 if (entry.door == null) continue;
@@ -2571,6 +2803,9 @@ namespace LeadMeOut
                 // into the wall. Used purely as a hint of "there's an opening around here"; the
                 // NavMesh decides where the opening actually is.
                 Vector3 pivot = entry.door.transform.position;
+
+                // Cheap reject: outside the path's bounding box, it can't be near any segment
+                if (pivot.x < minX || pivot.x > maxX || pivot.z < minZ || pivot.z > maxZ) continue;
 
                 int bestSeg = -1;
                 float bestDist = float.MaxValue;
@@ -2699,6 +2934,38 @@ namespace LeadMeOut
                 return true;
             }
             snapped = p;
+            return false;
+        }
+
+        // Searches for the closest walkable point to a target that the player can ACTUALLY reach,
+        // for cases where the target itself sits on a disconnected NavMesh island (a real gap
+        // between the mesh and door geometry — not a small seam). Unlike a plain SamplePosition
+        // widen, every candidate here is validated with a real CalculatePath before being
+        // accepted, so this can't return a point that merely looks close but isn't connected.
+        private bool FindNearestReachablePoint(Vector3 from, Vector3 target, out Vector3 result)
+        {
+            result = Vector3.zero;
+            float[] radii = { 2f, 4f, 6f, 9f, 13f };
+            const int ringSamples = 16;
+
+            foreach (float r in radii)
+            {
+                for (int i = 0; i < ringSamples; i++)
+                {
+                    float angle = i * (360f / ringSamples) * Mathf.Deg2Rad;
+                    Vector3 probe = target + new Vector3(Mathf.Cos(angle) * r, 0f, Mathf.Sin(angle) * r);
+
+                    NavMeshHit hit;
+                    if (!NavMesh.SamplePosition(probe, out hit, 2f, NavMesh.AllAreas)) continue;
+                    if (Mathf.Abs(hit.position.y - target.y) > 4f) continue; // stay on the same floor
+
+                    if (IsPathComplete(from, hit.position))
+                    {
+                        result = hit.position;
+                        return true;
+                    }
+                }
+            }
             return false;
         }
 
